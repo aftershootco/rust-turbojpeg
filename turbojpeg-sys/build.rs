@@ -98,26 +98,30 @@ fn find_default(link_kind: LinkKind) -> Result<Library> {
 /// tree (`LIB_RESOLVER_MODE(S)` can reorder). Building from source is the last resort: its
 /// `libjpeg.a` (libjpeg 6.2 API) lands on the link path and shadows the libjpeg a vcpkg
 /// OpenCV links with `-ljpeg`, so the link fails on `jpeg_default_qtables`.
+///
+/// Written the way lib-resolver's README "Build-script conventions" describes. Errors are
+/// returned rather than panicking: the caller falls back to the default source.
 fn find_lib_resolver(link_kind: LinkKind) -> Result<Library> {
-    use lib_resolver::{LinkKind as LrLinkKind, Resolver, Strategy};
+    use lib_resolver::{LinkKind as LrLinkKind, LinkSearch, Resolver, Strategy};
 
     println!("Using lib-resolver to find libturbojpeg");
+    let mut search = LinkSearch::default();
     let resolver = Resolver::new("turbojpeg")
+        .env_prefix("TURBOJPEG")
         .pkg_config("libturbojpeg")
-        .vcpkg("libjpeg-turbo")
-        .env_prefix("TURBOJPEG");
+        .vcpkg("libjpeg-turbo");
+    let resolver = match link_kind {
+        LinkKind::Static => resolver.link_static("turbojpeg").pkg_config_link_kind(LrLinkKind::Static),
+        LinkKind::Dynamic => resolver.link_dylib("turbojpeg").pkg_config_link_kind(LrLinkKind::Dylib),
+        LinkKind::Default => resolver.link_static("turbojpeg"),
+    };
     // The tj3 API needs libjpeg-turbo 3.0, like `find_pkg_config` requires.
     let resolver = if pkg_config_has_turbojpeg_3() {
         resolver
     } else {
         resolver.order(&[Strategy::Env, Strategy::Vcpkg])
     };
-    let resolver = match link_kind {
-        LinkKind::Static => resolver.link_static("turbojpeg").pkg_config_link_kind(LrLinkKind::Static),
-        LinkKind::Dynamic => resolver.link_dylib("turbojpeg").pkg_config_link_kind(LrLinkKind::Dylib),
-        LinkKind::Default => resolver.link_static("turbojpeg"),
-    };
-    let lib = resolver.probe()?;
+    let lib = resolver.probe_sharing(&mut search)?;
 
     Ok(Library {
         include_paths: lib.include_paths,
