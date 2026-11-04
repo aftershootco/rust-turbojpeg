@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum LinkKind {
     Static,
     Dynamic,
@@ -76,16 +76,72 @@ fn build_or_find_library(link_kind: LinkKind) -> Result<Library> {
                     - 'explicit' to use TURBOJPEG_LIB_DIR and TURBOJPEG_INCLUDE_DIR")
             }
         },
-        None => {
-            if cfg!(feature = "cmake") {
-                build_vendor(link_kind)
-            } else if cfg!(feature = "pkg-config") {
-                find_pkg_config(link_kind)
-            } else {
-                find_explicit(link_kind)
-            }
-        },
+        None => find_lib_resolver(link_kind).or_else(|err| {
+            println!("lib-resolver did not find turbojpeg, using the default source: {err:#}");
+            find_default(link_kind)
+        }),
     }
+}
+
+fn find_default(link_kind: LinkKind) -> Result<Library> {
+    if cfg!(feature = "cmake") {
+        build_vendor(link_kind)
+    } else if cfg!(feature = "pkg-config") {
+        find_pkg_config(link_kind)
+    } else {
+        find_explicit(link_kind)
+    }
+}
+
+/// aftershoot: find libturbojpeg the way the rest of the workspace finds native libraries:
+/// `TURBOJPEG_DIR`/`_LIB_DIR`/`_INCLUDE_DIR`, then pkg-config, then lib-resolver's vcpkg
+/// tree (`LIB_RESOLVER_MODE(S)` can reorder). Building from source is the last resort: its
+/// `libjpeg.a` (libjpeg 6.2 API) lands on the link path and shadows the libjpeg a vcpkg
+/// OpenCV links with `-ljpeg`, so the link fails on `jpeg_default_qtables`.
+///
+/// Written the way lib-resolver's README "Build-script conventions" describes. Errors are
+/// returned rather than panicking: the caller falls back to the default source.
+fn find_lib_resolver(link_kind: LinkKind) -> Result<Library> {
+    use lib_resolver::{LinkKind as LrLinkKind, LinkSearch, Resolver, Strategy};
+
+    println!("Using lib-resolver to find libturbojpeg");
+    let mut search = LinkSearch::default();
+    let resolver = Resolver::new("turbojpeg")
+        .env_prefix("TURBOJPEG")
+        .pkg_config("libturbojpeg")
+        .vcpkg("libjpeg-turbo");
+    let resolver = match link_kind {
+        LinkKind::Static => resolver.link_static("turbojpeg").pkg_config_link_kind(LrLinkKind::Static),
+        LinkKind::Dynamic => resolver.link_dylib("turbojpeg").pkg_config_link_kind(LrLinkKind::Dylib),
+        LinkKind::Default => resolver.link_static("turbojpeg"),
+    };
+    // The tj3 API needs libjpeg-turbo 3.0, like `find_pkg_config` requires.
+    let resolver = if pkg_config_has_turbojpeg_3() {
+        resolver
+    } else {
+        resolver.order(&[Strategy::Env, Strategy::Vcpkg])
+    };
+    let lib = resolver.probe_sharing(&mut search)?;
+
+    Ok(Library {
+        include_paths: lib.include_paths,
+        defines: HashMap::new(),
+    })
+}
+
+#[cfg(feature = "pkg-config")]
+fn pkg_config_has_turbojpeg_3() -> bool {
+    pkg_config::Config::new()
+        .atleast_version("3.0")
+        .cargo_metadata(false)
+        .env_metadata(false)
+        .probe("libturbojpeg")
+        .is_ok()
+}
+
+#[cfg(not(feature = "pkg-config"))]
+fn pkg_config_has_turbojpeg_3() -> bool {
+    false
 }
 
 #[cfg(feature = "pkg-config")]

@@ -36,6 +36,8 @@ libc = "^0.2"
 anyhow = {version = "^1.0"}
 bindgen = {version = "^0.57", optional = true}
 cmake = {version = "^0.1", optional = true}
+# aftershoot: resolve libturbojpeg like the rest of the backend workspace (see build.rs).
+lib-resolver = { git = "ssh://git@github.com/aftershootco/lib-resolver.git" }
 pkg-config = {version = "^0.3", optional = true}
 
 [features]
